@@ -1,0 +1,2 @@
+KERNEL=="hidraw*", ATTRS{idVendor}=="feed", MODE="0666"
+

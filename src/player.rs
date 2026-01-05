@@ -2,12 +2,14 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::mem;
 use std::path::Path;
+use std::thread::sleep;
+use std::time::Duration;
 
 use crate::sampler::{SampleMessage, Sampler};
 use crate::{MANUAL_COUNT, NOTE_COUNT, NOTE_START, REGISTER_COUNT};
 use bitmaps::Bitmap;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{HostId, SampleRate, host_from_id};
+use cpal::{HostId, SampleRate, StreamConfig, host_from_id};
 use dasp_sample::I24;
 use hound::WavReader;
 use itertools::Itertools;
@@ -187,17 +189,28 @@ impl Player {
     }
     pub fn start(&mut self) {
         println!("entered start function");
-        let host = host_from_id(HostId::Alsa).unwrap();
-        let device = host.default_output_device().unwrap();
-        let (sampler, stream_sender) = Sampler::new(mem::take(&mut self.sample_info));
-        let mut supported_configs_range = device.supported_output_configs().unwrap();
-        let supported_config = supported_configs_range
-            .next()
-            .unwrap()
-            .with_sample_rate(SampleRate(48000));
-        let mut config = supported_config.config();
-        config.buffer_size = cpal::BufferSize::Fixed(128);
 
+        //these loops are there because for some reason these functions may fail the first time
+        let host = loop {
+            match host_from_id(HostId::Jack) {
+                Ok(host) => break host,
+                Err(e) => println!("{e:?}"),
+            }
+            sleep(Duration::from_secs(1));
+        };
+        let device = loop {
+            match host.default_output_device() {
+                Some(device) => break device,
+                None => println!("No device found"),
+            }
+            sleep(Duration::from_secs(1));
+        };
+        let (sampler, stream_sender) = Sampler::new(mem::take(&mut self.sample_info));
+        let config = StreamConfig {
+            channels: 2,
+            sample_rate: SampleRate(48000),
+            buffer_size: cpal::BufferSize::Fixed(64),
+        };
         let stream = device
             .build_output_stream(
                 &config,

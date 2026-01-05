@@ -1,0 +1,7 @@
+[Unit]
+Description=Expand filesystem
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/first_start.sh
+[Install]
+WantedBy=multi-user.target

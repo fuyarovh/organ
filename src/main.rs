@@ -142,7 +142,7 @@ fn main() {
                                         }
                                     }
                                 }
-                            } else {
+                            } else if *id == 0x7F {
                                 writebuf[0] = 1;
                                 writebuf[1] = current_letter;
                                 writebuf[2] = current_number;
@@ -173,7 +173,13 @@ fn main() {
                             .unwrap();
                     }
                     Message::ClearRegisters => {
+
                         current_stops = StopStatus::default();
+                        for register in 0..current_stops.0.len() as u8 {
+                            for manual in 0..4 {
+                                player_sender.send(ScheduledTask {note: 0, register, task_type: ScheduledTaskType::Register(manual, false)}, None).unwrap();
+                            }
+                        }
                         message_sender.send(Message::UpdateLEDs).unwrap();
                     }
                     Message::ChangeBank(letter, number) => {
@@ -475,6 +481,8 @@ fn main() {
                                 let letter = buf[2];
                                 let number = buf[3];
                                 sender.send(Message::SetBank(letter, number)).unwrap();
+                            }
+                            7 => { //set variables
                             }
                             _ => (),
                         }

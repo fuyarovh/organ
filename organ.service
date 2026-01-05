@@ -1,0 +1,13 @@
+[Unit]
+Description=The Progam that manages stops and the setter
+Requires=pipewire.service
+After=pipewire.service
+
+[Service]
+Type=simple
+Restart=on-failure
+WorkingDirectory =/home/organ
+ExecStart=/home/organ/organ
+
+[Install]
+WantedBy=default.target
