@@ -1,0 +1,2 @@
+enable dhcpcd.service
+enable sshd.service

@@ -1,0 +1,2 @@
+#!/bin/sh
+useradd -G wheel,audio organ --password "$(openssl passwd -6 organ)"

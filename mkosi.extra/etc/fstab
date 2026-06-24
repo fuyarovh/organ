@@ -1,0 +1,1 @@
+overlay            /home            overlay    lowerdir=/home,upperdir=/var/mnt/home-store/upper,workdir=/var/mnt/home-store/work,nofail,x-systemd.requires=/var/mnt/home-store
