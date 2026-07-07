@@ -117,8 +117,8 @@ if you didn't order the register pcb pre assembled, solder all smd components to
 1. solder all components except switches and leds (diodes, resistors, JST headers) to the stop switch pcb
 1. solder the hall sensors and the board to wire connectors to the sensor pcbs.
 ## computer
-1. download one of the `organ.img.xz` files from the releases page and extract it (or create it instead with the `create_image.sh` script).
-1. write the organ.img to the ssd somehow. On linux use `dd if=organ.img of=/dev/disk/by-id/your-disk-id bs=4M status=progress oflag=sync` On windows either google how to do it or use a tool like clonezilla.
+1. download one of the `organ.raw.xz` files from the releases page and extract it (or create it instead with `mkosi build`).
+1. write the organ.raw to the ssd somehow. On linux use `dd if=organ.raw of=/dev/disk/by-id/your-disk-id bs=4M status=progress oflag=sync` On windows either google how to do it or use a tool like clonezilla.
 1. install the ssd and ram into the mainboard.
 1. download the firmware files from [here](https://github.com/fuyarovh/qmk_firmware/releases) you will need them later
 
