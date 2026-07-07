@@ -85,6 +85,7 @@ fn main() {
     thread::spawn(move || {
         let mut player = Player::new("./registers");
         sender_sender.send(player.sender()).unwrap();
+        println!("starting player");
         player.start();
     });
     let player_sender = sender_receiver.recv().unwrap();
@@ -359,6 +360,7 @@ fn main() {
         });
     }
     //pipewire stuff
+    println!("start setup pipewire");
     let pw_sender = message_sender.clone();
     thread::spawn(move || {
         let alsa_seq = alsa::Seq::open(None, None, false).unwrap();

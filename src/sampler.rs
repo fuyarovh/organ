@@ -1,77 +1,76 @@
 use std::{
-    collections::HashMap,
+    simd::Simd,
     sync::mpsc::{Receiver, SyncSender, sync_channel},
 };
 
 use cpal::OutputCallbackInfo;
 
-use crate::{CROSSFADE_SAMPLES, NOTE_COUNT, player::SampleInfo};
+use crate::{NOTE_COUNT, REGISTER_COUNT, player::SampleInfo};
 
+const FRAME_COUNT: usize = 4;
 // #[derive(Default)]
+#[derive(Clone)]
 struct Samples {
-    pub pre: &'static [f32],
-    pub repeat: &'static [f32],
-    pub extra: &'static [f32],
+    pub sample_info: &'static SampleInfo,
     pub index: usize,
     pub fade_out_multiplier: f32,
     pub fade_out: bool,
-    pub repeating: bool,
-    pub has_repeated: bool,
 }
 
 impl Samples {
-    pub fn new(pre: &'static [f32], repeat: &'static [f32], extra: &'static [f32]) -> Self {
+    pub fn new(sample_info: &'static SampleInfo) -> Self {
         Self {
-            pre,
             fade_out_multiplier: 1f32,
-            repeat,
-            extra,
-            index: Default::default(),
+            sample_info,
+            index: 0,
             fade_out: Default::default(),
-            repeating: Default::default(),
-            has_repeated: Default::default(),
-            // ..Default::default()
         }
     }
 }
-
+const fn const_powi(base: f32, exp: u32) -> f32 {
+    let mut i = exp;
+    let mut res = 1.0;
+    while i > 0 {
+        res *= base;
+        i -= 1;
+    }
+    res
+}
 impl Iterator for Samples {
-    type Item = f32;
+    type Item = Simd<f32, { 2 * FRAME_COUNT }>;
 
+    #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
-        if self.fade_out {
-            self.fade_out_multiplier *= 0.9998;
-            if self.fade_out_multiplier < 0.005 {
-                self.fade_out_multiplier *= 0.998;
-            }
+        const FADE_BASE: f32 = 0.998;
+        if self.fade_out_multiplier <= 0.00002 {
+            return None;
         }
-        (self.fade_out_multiplier > 0.0001).then_some(
-            self.fade_out_multiplier
-                * if self.repeating {
-                    let mut ret = *self.repeat.get(self.index).unwrap();
-                    let crossfade_samples = CROSSFADE_SAMPLES.min(self.extra.len());
-                    if self.index < crossfade_samples && self.has_repeated {
-                        let crossfade_val = self.extra.get(self.index).cloned().unwrap_or(ret);
-                        ret = ret * self.index as f32 / crossfade_samples as f32
-                            + crossfade_val * (1f32 - self.index as f32 / crossfade_samples as f32);
-                    }
-                    self.index = if self.index + 1 == self.repeat.len() {
-                        self.has_repeated = true;
-                        0
-                    } else {
-                        self.index + 1
-                    };
-                    ret
-                } else if let Some(val) = self.pre.get(self.index).cloned() {
-                    self.index += 1;
-                    val
-                } else {
-                    self.repeating = true;
-                    // self.pre.clear();
-                    self.index = 0;
-                    self.next().unwrap_or_default()
-                },
-        )
+        let index = self.index;
+        self.index += FRAME_COUNT;
+        if self.index >= self.sample_info.loop_end {
+            self.index -= self.sample_info.loop_end - self.sample_info.loop_start;
+        }
+
+        let ret = Simd::from_slice(&self.sample_info.samples[index * 2..]);
+        if self.fade_out {
+            let ret =
+                ret * Simd::from_array(
+                    const {
+                        let mut array = [1.0; 2 * FRAME_COUNT];
+                        let mut i = 2;
+                        while i < FRAME_COUNT * 2 {
+                            let last_val = array[i - 2];
+                            array[i] = last_val * FADE_BASE;
+                            i += 1;
+                        }
+                        array
+                    },
+                ) * Simd::splat(self.fade_out_multiplier);
+            self.fade_out_multiplier *= const { const_powi(FADE_BASE, FRAME_COUNT as u32) };
+            Some(ret)
+        } else {
+            Some(ret)
+        }
     }
 }
 
@@ -80,9 +79,12 @@ pub enum SampleMessage {
     Stop(u8, u8),
 }
 pub struct Sampler {
-    sample_map: HashMap<((u8, u8), u8), Samples>,
+    // sample_map: HashMap<((u8, u8), u8), Samples>,
     sample_info: &'static [[Option<SampleInfo>; NOTE_COUNT]],
     receiver: Receiver<SampleMessage>,
+    active_voices: Vec<[[Option<Samples>; 16]; REGISTER_COUNT]>,
+    active_voice_indices: Vec<(usize, usize, usize)>,
+    is_rt_configured: bool,
 }
 
 impl Sampler {
@@ -90,13 +92,17 @@ impl Sampler {
         sample_info: Vec<[Option<SampleInfo>; NOTE_COUNT]>,
     ) -> (Self, SyncSender<SampleMessage>) {
         let (sender, receiver) = sync_channel(2000);
-        let sample_map = HashMap::new();
         let sample_info = Box::new(sample_info).leak();
         (
             Self {
-                sample_map,
                 receiver,
                 sample_info,
+                active_voices: vec![
+                    const { [const { [const { None }; 16] }; REGISTER_COUNT] };
+                    NOTE_COUNT
+                ],
+                active_voice_indices: Default::default(),
+                is_rt_configured: false,
             },
             sender,
         )
@@ -107,42 +113,69 @@ impl FnMut<(&mut [f32], &OutputCallbackInfo)> for Sampler {
         &mut self,
         (data, _info): (&mut [f32], &OutputCallbackInfo),
     ) -> Self::Output {
+        if !self.is_rt_configured {
+            unsafe {
+                libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE);
+                let mut param: libc::sched_param = std::mem::zeroed();
+                param.sched_priority = 85;
+                libc::sched_setscheduler(0, libc::SCHED_FIFO, &param);
+            }
+            self.is_rt_configured = true;
+        }
         while let Ok(message) = self.receiver.try_recv() {
             match message {
                 SampleMessage::NewNote(key) => {
                     if let Some(sample_info) = &self.sample_info[key.0 as usize][key.1 as usize] {
-                        if let Some(sample) = self.sample_map.remove(&(key, 0))
-                            && let Some(idx) = (1..16u8).find(|x| !self.sample_map.contains_key(&(key,*x))) {
-                                self.sample_map.insert((key,idx), sample);
-                            } 
-                        self.sample_map
-                            .insert((key,0), Samples::new(&sample_info.pre, &sample_info.repeat, &sample_info.extra));
+                        if let Some(sample) =
+                            self.active_voices[key.0 as usize][key.1 as usize][0].take()
+                            && let Some(idx) = (1..16usize).find(|&x| {
+                                self.active_voices[key.0 as usize][key.1 as usize][x].is_none()
+                            })
+                        {
+                            self.active_voices[key.0 as usize][key.1 as usize][idx] = Some(sample);
+                            self.active_voice_indices
+                                .push((key.0 as usize, key.1 as usize, idx));
+                        } else {
+                            self.active_voice_indices
+                                .push((key.0 as usize, key.1 as usize, 0));
+                        }
+                        self.active_voices[key.0 as usize][key.1 as usize][0] =
+                            Some(Samples::new(sample_info));
                     }
                 }
                 SampleMessage::Stop(val0, val1) => {
-                    let key = ((val0, val1),0);
-                    if let Some(value) = self.sample_map.get_mut(&key) {
+                    if let Some(Some(value)) =
+                        self.active_voices[val0 as usize][val1 as usize].get_mut(0)
+                    {
                         value.fade_out = true;
                     }
                 }
             }
         }
-        let mut garbage = Vec::new();
-        for point in data.iter_mut() {
-            *point = 0.0;
-        }
-        for (key, iterator) in self.sample_map.iter_mut() {
-            let count = data
-                .iter_mut()
-                .zip(iterator)
-                .map(|(out, input)| *out += 0.2 * input)
-                .count();
-            if count < data.len() {
-                garbage.push(*key);
+        data.fill(0.0);
+
+        self.active_voice_indices.retain(|idx| {
+            let voice_option = &mut self.active_voices[idx.0][idx.1][idx.2];
+            if let Some(voice) = voice_option {
+                let count = data
+                    .as_chunks_mut::<{ FRAME_COUNT * 2 }>()
+                    .0
+                    .iter_mut()
+                    .zip(voice)
+                    .map(|(out, input)| {
+                        (Simd::from_slice(out) + input).copy_to_slice(out);
+                    })
+                    .count();
+                if count * FRAME_COUNT * 2 == data.len() {
+                    return true;
+                }
             }
-        }
-        for entry in garbage {
-            self.sample_map.remove(&entry);
+            *voice_option = None;
+            false
+        });
+        for chunk in data.as_chunks_mut::<{ FRAME_COUNT * 2 }>().0 {
+            (Simd::<f32, { FRAME_COUNT * 2 }>::from_slice(chunk) * Simd::splat(0.25))
+                .copy_to_slice(chunk);
         }
     }
 }
